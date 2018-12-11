@@ -67,6 +67,7 @@ static void usage(const char *name)
 			"        rgba      -  rgba textured cube\n"
 			"        nv12-2img -  yuv textured (color conversion in shader)\n"
 			"        nv12-1img -  yuv textured (single nv12 texture)\n"
+			"        fp16      -  rgba textured cube (sampling from half float)\n"
 			"    -m, --modifier=MODIFIER  hardcode the selected modifier\n"
 			"    -s, --samples=N          use MSAA\n"
 			"    -V, --video=FILE         video textured cube\n",
@@ -105,6 +106,8 @@ int main(int argc, char *argv[])
 				mode = NV12_2IMG;
 			} else if (strcmp(optarg, "nv12-1img") == 0) {
 				mode = NV12_1IMG;
+			} else if (strcmp(optarg, "fp16") == 0) {
+				mode = FP16;
 			} else {
 				printf("invalid mode: %s\n", optarg);
 				usage(argv[0]);

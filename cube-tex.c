@@ -253,6 +253,78 @@ static int get_fd_rgba(uint32_t *pstride, uint64_t *modifier)
 	return fd;
 }
 
+static uint64_t color_to_f16(uint8_t raw)
+{
+    float in = (float)raw / (float)0xff;
+
+    uint32_t inu = *(uint32_t *)&in;
+    uint32_t t1;
+    uint32_t t2;
+    uint32_t t3;
+
+    t1 = inu & 0x7fffffff;                 // Non-sign bits
+    t2 = inu & 0x80000000;                 // Sign bit
+    t3 = inu & 0x7f800000;                 // Exponent
+
+    t1 >>= 13;                             // Align mantissa on MSB
+    t2 >>= 16;                             // Shift sign bit into position
+
+    t1 -= 0x1c000;                         // Adjust bias
+
+    t1 = (t3 < 0x38800000) ? 0 : t1;       // Flush-to-zero
+    t1 = (t3 > 0x8e000000) ? 0x7bff : t1;  // Clamp-to-max
+    t1 = (t3 == 0 ? 0 : t1);               // Denormals-as-zero
+
+    t1 |= t2;                              // Re-insert sign bit
+
+    return (uint64_t)t1;
+}
+
+static int get_fd_fp16(uint32_t *pstride, uint64_t *modifier)
+{
+	struct gbm_bo *bo;
+	void *map_data = NULL;
+	uint32_t stride, off;
+	extern const uint32_t raw_512x512_rgba[];
+	uint8_t *map, *src = (uint8_t *)raw_512x512_rgba;
+	int fd;
+	uint16_t r, g, b;
+
+	/* NOTE: do not actually use GBM_BO_USE_WRITE since that gets us a dumb buffer: */
+	bo = gbm_bo_create(gl.gbm->dev, texw, texh, GBM_FORMAT_ABGR16161616F, GBM_BO_USE_LINEAR);
+
+	map = gbm_bo_map(bo, 0, 0, texw, texh, GBM_BO_TRANSFER_WRITE, &stride, &map_data);
+
+	for (uint32_t i = 0; i < texh; i++) {
+		for (uint32_t j = 0; j < texw; j++) {
+			r = color_to_f16(src[(texw * 4 * i) + (j * 4) + 0]);
+			g = color_to_f16(src[(texw * 4 * i) + (j * 4) + 1]);
+			b = color_to_f16(src[(texw * 4 * i) + (j * 4) + 2]);
+
+			off = stride * i + j * 8;
+			*(uint16_t *)&map[off + 0] = r;
+			*(uint16_t *)&map[off + 2] = g;
+			*(uint16_t *)&map[off + 4] = b;
+		}
+	}
+
+	gbm_bo_unmap(bo, map_data);
+
+	fd = gbm_bo_get_fd(bo);
+
+	if (gbm_bo_get_modifier)
+		*modifier = gbm_bo_get_modifier(bo);
+	else
+		*modifier = DRM_FORMAT_MOD_LINEAR;
+
+	/* we have the fd now, no longer need the bo: */
+	gbm_bo_destroy(bo);
+
+	*pstride = stride;
+
+	return fd;
+}
+
 static int get_fd_y(uint32_t *pstride, uint64_t *modifier)
 {
 	struct gbm_bo *bo;
@@ -332,6 +404,52 @@ static int init_tex_rgba(void)
 		EGL_WIDTH, texw,
 		EGL_HEIGHT, texh,
 		EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_ABGR8888,
+		EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+		EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+		EGL_DMA_BUF_PLANE0_PITCH_EXT, stride,
+		EGL_NONE, EGL_NONE,	/* modifier lo */
+		EGL_NONE, EGL_NONE,	/* modifier hi */
+		EGL_NONE
+	};
+
+	if (egl->modifiers_supported &&
+	    modifier != DRM_FORMAT_MOD_INVALID) {
+		unsigned size =  ARRAY_SIZE(attr);
+		attr[size - 5] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
+		attr[size - 4] = modifier & 0xFFFFFFFF;
+		attr[size - 3] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT;
+		attr[size - 2] = modifier >> 32;
+	}
+	EGLImage img;
+
+	glGenTextures(1, gl.tex);
+
+	img = egl->eglCreateImageKHR(egl->display, EGL_NO_CONTEXT,
+			EGL_LINUX_DMA_BUF_EXT, NULL, attr);
+	assert(img);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_EXTERNAL_OES, gl.tex[0]);
+	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	egl->glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, img);
+
+	egl->eglDestroyImageKHR(egl->display, img);
+	close(fd);
+
+	return 0;
+}
+
+static int init_tex_fp16(void)
+{
+	uint32_t stride;
+	uint64_t modifier;
+	int fd = get_fd_fp16(&stride, &modifier);
+	EGLint attr[] = {
+		EGL_WIDTH, texw,
+		EGL_HEIGHT, texh,
+		EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_ABGR16161616F,
 		EGL_DMA_BUF_PLANE0_FD_EXT, fd,
 		EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
 		EGL_DMA_BUF_PLANE0_PITCH_EXT, stride,
@@ -518,6 +636,8 @@ static int init_tex(enum mode mode)
 		return init_tex_nv12_2img();
 	case NV12_1IMG:
 		return init_tex_nv12_1img();
+	case FP16:
+		return init_tex_fp16();
 	case SMOOTH:
 	case VIDEO:
 		assert(!"unreachable");

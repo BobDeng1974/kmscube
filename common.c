@@ -43,7 +43,7 @@ gbm_surface_create_with_modifiers(struct gbm_device *gbm,
 const struct gbm * init_gbm(int drm_fd, int w, int h, uint64_t modifier)
 {
 	gbm.dev = gbm_create_device(drm_fd);
-	gbm.format = GBM_FORMAT_XRGB8888;
+	gbm.format = GBM_FORMAT_XBGR16161616F;
 	gbm.surface = NULL;
 
 	if (gbm_surface_create_with_modifiers) {
@@ -170,16 +170,6 @@ int init_egl(struct egl *egl, const struct gbm *gbm, int samples)
 		EGL_NONE
 	};
 
-	const EGLint config_attribs[] = {
-		EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-		EGL_RED_SIZE, 1,
-		EGL_GREEN_SIZE, 1,
-		EGL_BLUE_SIZE, 1,
-		EGL_ALPHA_SIZE, 0,
-		EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-		EGL_SAMPLES, samples,
-		EGL_NONE
-	};
 	const char *egl_exts_client, *egl_exts_dpy, *gl_exts;
 
 #define get_proc_client(ext, name) do { \
@@ -222,6 +212,12 @@ int init_egl(struct egl *egl, const struct gbm *gbm, int samples)
 
 	egl->modifiers_supported = has_ext(egl_exts_dpy,
 					   "EGL_EXT_image_dma_buf_import_modifiers");
+	egl->pixel_format_float_supported = has_ext(egl_exts_dpy,
+						    "EGL_EXT_pixel_format_float");
+	if (!egl->pixel_format_float_supported) {
+		printf("EGL_EXT_pixel_format_float is unsupported\n");
+		return -1;
+	}
 
 	printf("Using display %p with EGL version %d.%d\n",
 			egl->display, major, minor);
@@ -238,6 +234,18 @@ int init_egl(struct egl *egl, const struct gbm *gbm, int samples)
 		printf("failed to bind api EGL_OPENGL_ES_API\n");
 		return -1;
 	}
+
+	const EGLint config_attribs[] = {
+		EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+		EGL_RED_SIZE, 16,
+		EGL_GREEN_SIZE, 16,
+		EGL_BLUE_SIZE, 16,
+		EGL_ALPHA_SIZE, 0,
+		EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+		EGL_SAMPLES, samples,
+		EGL_COLOR_COMPONENT_TYPE_EXT, EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT,
+		EGL_NONE
+	};
 
 	if (!egl_choose_config(egl->display, config_attribs, gbm->format,
                                &egl->config)) {

@@ -103,6 +103,7 @@ struct egl {
 	PFNEGLDUPNATIVEFENCEFDANDROIDPROC eglDupNativeFenceFDANDROID;
 
 	bool modifiers_supported;
+	bool pixel_format_float_supported;
 
 	void (*draw)(unsigned i);
 };
@@ -128,6 +129,7 @@ enum mode {
 	NV12_2IMG,     /* NV12, handled as two textures and converted to RGB in shader */
 	NV12_1IMG,     /* NV12, imported as planar YUV eglimg */
 	VIDEO,         /* video textured cube */
+	FP16,          /* single-plane half float RGBA */
 };
 
 const struct egl * init_cube_smooth(const struct gbm *gbm, int samples);
